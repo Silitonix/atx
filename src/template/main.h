@@ -12,13 +12,13 @@ void *thread_pool_worker(void *arg);
 
 #define err_check(value, msg)                                                  \
   if ((value) < 0) {                                                           \
-    perror(msg);                                                               \
+      perror("\033[0;30;41mERROR\033[0m: "msg"\n");                                                               \
     exit(EXIT_FAILURE);                                                        \
   }
 
 #define null_check(value, msg)                                                 \
   if ((value) == NULL) {                                                       \
-    perror(msg);                                                               \
+      perror("\033[0;30;41mERROR\033[0m: "msg"\n");                                                               \
     exit(EXIT_FAILURE);                                                        \
   }
 

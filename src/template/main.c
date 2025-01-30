@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <linux/limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,11 +17,14 @@
 #define MAX_EVENTS 10000
 #define TASK_QUEUE_SIZE 256
 
+volatile sig_atomic_t running = 1;
+int num_task = 0;
+int fd_epoll;
+int fd_server;
+
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 t_task task_queue[256];
-int num_task = 0;
-int fd_epoll;
 
 void *thread_pool_worker(void *arg);
 void (*handle)(t_task task);
@@ -42,7 +46,7 @@ int server(int port, int num_thread) {
     err_check(err, "create thread failed");
   }
 
-  int fd_server, fd_client;
+  int fd_client;
   struct sockaddr_in addr_server, addr_client;
   memset(&addr_server, 0, sizeof(addr_server));
   addr_server.sin_family = AF_INET;
@@ -52,32 +56,32 @@ int server(int port, int num_thread) {
   socklen_t addr_len = sizeof(addr_client);
 
   fd_server = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-  err_check(fd_server, "failed creating socket\n");
+  err_check(fd_server, "failed creating socket");
 
   int opt = 1;
   setsockopt(fd_server, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
   err = bind(fd_server, (struct sockaddr *)&addr_server, sizeof(addr_server));
-  err_check(err, "failed to bind the address\n");
+  err_check(err, "failed to bind the address");
 
   err = listen(fd_server, SOMAXCONN);
-  err_check(err, "failed to listen\n");
+  err_check(err, "failed to listen");
 
   if (port == 0) {
     err = getsockname(fd_server, (struct sockaddr *)&addr_server, &addr_len);
-    err_check(err, "err: getting new name");
+    err_check(err, "getting new name");
     port = ntohs(addr_server.sin_port);
   }
 
   fd_epoll = epoll_create1(0);
-  err_check(fd_epoll, "err: create epoll");
+  err_check(fd_epoll, "create epoll");
   add_to_epoll(fd_server);
 
   struct epoll_event events[MAX_EVENTS];
 
-  printf("Server listening on http://0.0.0.0:%d\n", port);
+  printf("\033[0;30;42mPROCESS\033[0m: listening on http://0.0.0.0:%d\n", port);
 
-  while (1) {
+  while (running) {
     int num_events = epoll_wait(fd_epoll, events, MAX_EVENTS, -1);
     for (int i = 0; i < num_events; i++) {
       if (events[i].data.fd == fd_server) {
@@ -98,15 +102,15 @@ int server(int port, int num_thread) {
   }
   return 0;
 }
-void load_runtime(char *file_name) {
-
+void load_runtime(const char *file_name) {
   void *dl = dlopen(file_name, RTLD_NOW);
-  null_check(dl, "err: runtime not found\n");
+  null_check(dl, "runtime not found");
   handle = (void (*)(t_task))dlsym(dl, "handle");
   if (dlerror() != NULL) {
-    perror("err: invalid runtime provided\n");
+     perror("\033[0;30;41mERROR\033[0m: invalid .\n");
     exit(EXIT_FAILURE);
   }
+  printf("\033[0;30;42mRUNTIME\033[0m: runtime loaded.\n");
 }
 
 // thread worker function
@@ -125,24 +129,15 @@ void *thread_pool_worker(void *_) {
   return NULL;
 }
 
-static int parse_opt(int key, char *arg, struct argp_state *state) {
-  static int port = 0;
-  static int num_thread = 0;
-  static char *file_runtime = NULL;
+static int parse_opt(int key, char *arg, struct argp_state *_) {
+  static int port = 0, num_thread = 0;
+  static const char *file_runtime = "./build.btx";
 
   switch (key) {
-  case 'p':
-    port = atoi(arg);
-    break;
-  case 't':
-    num_thread = atoi(arg);
-    break;
-  case 'f':
-    file_runtime = arg;
-    break;
+  case 'p':port = atoi(arg);break;
+  case 't':num_thread = atoi(arg);break;
+  case 'f':file_runtime = arg;break;
   case ARGP_KEY_END:
-
-    file_runtime = file_runtime == NULL ? "./build.btx" : file_runtime;
     num_thread = num_thread == 0 ? sysconf(_SC_NPROCESSORS_ONLN) : num_thread;
     load_runtime(file_runtime);
     server(port, num_thread);
@@ -151,7 +146,16 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
   return 0;
 }
 
+void signal_handler(int _) {
+  printf("\033[0;30;43mCLEANING\033[0m: closing up ...\n");
+  running = 0;
+  close(fd_server);
+  close(fd_epoll);
+}
+
 int main(int argc, char **argv) {
+  signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
   struct argp_option options[] = {
       {"port", 'p', "NUM", 0, "Start a server with desired port", 0},
       {"thread", 't', "NUM", 0, "Start a server with desired thread", 0},
