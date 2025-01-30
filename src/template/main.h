@@ -16,4 +16,10 @@ void *thread_pool_worker(void *arg);
     exit(EXIT_FAILURE);                                                        \
   }
 
+#define null_check(value, msg)                                                 \
+  if ((value) == NULL) {                                                       \
+    perror(msg);                                                               \
+    exit(EXIT_FAILURE);                                                        \
+  }
+
 #endif
