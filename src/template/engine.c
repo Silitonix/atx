@@ -91,7 +91,7 @@ int listen_socket(int port) {
     port = ntohs(addr_server.sin_port);
   }
 
-  printf("\rPROCESS: listening on http://0.0.0.0:%d\n", port);
+  printf("\r[\033[34mNotice\033[0m]: listening on http://0.0.0.0:%d\n", port);
 
   return fd_server;
 }
@@ -162,7 +162,7 @@ Lib load(const char *filename) {
 
 void try(int err, const char *msg) {
   if (err) {
-    printf("\rError: %s\n", msg);
+    printf("\r[\033[31mError\033[0m]: %s\n", msg);
     exit(EXIT_FAILURE);
   }
 }
@@ -184,7 +184,7 @@ int parse(int key, char *arg, struct argp_state *_) {
 }
 void signal_hanler(int _) {
   running = 0;
-  printf("\rNotice: stoping server please wait ...\n");
+  printf("\r[\033[34mNotice\033[0m]: stoping server please wait ...\n");
 }
 int main(int argc, char **argv) {
   signal(SIGTERM, &signal_hanler);
