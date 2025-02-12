@@ -63,6 +63,9 @@ void server(int port, int thread) {
   free(events);
   close(server);
   close(event_poll);
+  for (int t = 0; t < thread; t++) {
+    pthread_join(thread_pool[t], NULL);
+  }
 }
 int listen_socket(int port) {
   int err = 0;
