@@ -21,4 +21,3 @@ void handle(Task task) {
         "<h1>Hello, World!</h1>";
     write(task.client_fd, response, strlen(response));
 }
-}
