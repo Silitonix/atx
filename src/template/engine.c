@@ -6,9 +6,11 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -16,7 +18,10 @@ Task *queue = {0};
 Lib runtime = {0};
 int max_event = 64;
 int event_poll = 0;
+int min_event = 64;
+bool verbose = false;
 
+int event_shutdown = 0;
 volatile sig_atomic_t running = 1;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -28,23 +33,33 @@ void server(int port, int thread) {
         "create thread failed");
   }
   int server = listen_socket(port);
+  int client;
+  struct sockaddr addr_client = {0};
+  socklen_t addr_len = sizeof(addr_client);
+
   event_poll = epoll_create1(0);
   try(event_poll < 0, "create epoll failed");
   event_add(server);
 
-  struct epoll_event *events =
-      (struct epoll_event *)malloc(max_event * sizeof(struct epoll_event));
+  event_shutdown = eventfd(0, EFD_NONBLOCK);
+  try(event_shutdown < 0, "create event failed");
+  event_add(event_shutdown);
+
+  struct epoll_event *events = malloc(max_event * sizeof(struct epoll_event));
   while (running) {
     int num_event = epoll_wait(event_poll, events, max_event, -1);
 
     for (int i = 0; i < num_event; i++) {
+      if (events[i].data.fd == event_shutdown) {
+        print("shutdown event triggered");
+        running = 0;
+        goto bye;
+      }
       if (events[i].data.fd == server) {
-        int client;
-        struct sockaddr addr_client = {0};
-        socklen_t addr_len = sizeof(addr_client);
-        while ((client = accept(server, &addr_client, &addr_len)) > -1) {
-          event_add(client);
-        }
+
+        client = accept(server, &addr_client, &addr_len);
+        print("new connection!");
+        event_add(client);
       } else {
         pthread_mutex_lock(&mutex);
         task_add(events[i].data.fd);
@@ -54,19 +69,29 @@ void server(int port, int thread) {
     }
 
     if (num_event == max_event) {
-      max_event += 64;
-      events = (struct epoll_event *)realloc(
-          events, max_event * sizeof(struct epoll_event));
+      max_event *= 2;
+      print("expanding event pool ...");
+      events = realloc(events, max_event * sizeof(struct epoll_event));
+    } else if (num_event < max_event >> 1 && (max_event / 2) > min_event) {
+      max_event /= 2;
+      print("shrinking event pool to ...");
+      events = realloc(events, max_event * sizeof(struct epoll_event));
     }
   }
-
+bye:
   free(events);
+  task_clean();
   close(server);
   close(event_poll);
+
+  print("closing threads ...");
+
+  pthread_cond_broadcast(&cond);
   for (int t = 0; t < thread; t++) {
     pthread_join(thread_pool[t], NULL);
   }
 }
+
 int listen_socket(int port) {
   int err = 0;
   int opt = 1;
@@ -107,7 +132,11 @@ void event_add(int fd) {
   fcntl(fd, F_SETFD, flags | O_NONBLOCK);
   epoll_ctl(event_poll, EPOLL_CTL_ADD, fd, &event);
 }
-
+void task_clean(void) {
+  while (queue) {
+    task_remove(queue);
+  }
+}
 void task_add(int client_fd) {
   Task *task = (Task *)malloc(sizeof(Task));
   task->client_fd = client_fd;
@@ -136,31 +165,44 @@ void *work(void *_) {
   Task task;
   while (running) {
     pthread_mutex_lock(&mutex);
-    while (queue == NULL && running) {
+    while (queue == NULL) {
       pthread_cond_wait(&cond, &mutex);
+      if (!running) {
+        pthread_mutex_unlock(&mutex);
+        return NULL;
+      }
     }
     task = *queue;
     task_remove(queue);
     pthread_mutex_unlock(&mutex);
     runtime.function(task);
+    print("closing connection ...");
     close(task.client_fd);
   }
   return NULL;
 }
 
 Lib load(const char *filename) {
+  print("loading runtime file ...");
   Lib cache;
   cache.handle = dlopen(filename, RTLD_NOW);
 
   char *error = dlerror();
   try(error != NULL, error);
 
+  print("loading runtime function ...");
   cache.function = (TaskHandler)dlsym(cache.handle, "handle");
   error = dlerror();
 
   try(error != NULL, error);
   try(!cache.function, "null function");
   return cache;
+}
+
+void print(const char *msg) {
+  if (verbose) {
+    printf("\r[\033[31mNotice\033[0m]: %s\n", msg);
+  }
 }
 
 void try(int err, const char *msg) {
@@ -176,6 +218,14 @@ int parse(int key, char *arg, struct argp_state *_) {
   case 'p': port = atoi(arg); break;
   case 't': thread = atoi(arg); break;
   case 'f': runtime_path = arg; break;
+  case 'v': verbose = true; break;
+  case 'm':
+    min_event = atoi(arg);
+    if (min_event < 2) {
+      printf("\r[\033[31mError\033[0m]: min event must be greater than 1\n");
+      exit(EXIT_FAILURE);
+    }
+    break;
   case ARGP_KEY_END:
     thread = thread == 0 ? sysconf(_SC_NPROCESSORS_ONLN) : thread;
     runtime = load(runtime_path);
@@ -186,17 +236,13 @@ int parse(int key, char *arg, struct argp_state *_) {
   return 0;
 }
 void signal_hanler(int _) {
-  running = 0;
+  uint64_t val = 1;
+  write(event_shutdown, &val, sizeof(val));
   printf("\r[\033[34mNotice\033[0m]: stoping server please wait ...\n");
 }
 int main(int argc, char **argv) {
   signal(SIGTERM, &signal_hanler);
   signal(SIGINT, &signal_hanler);
-  const struct argp_option options[] = {
-      {"port", 'p', "NUM", 0, "Start a server with desired port", 0},
-      {"thread", 't', "NUM", 0, "Start a server with desired thread", 0},
-      {"file", 'f', "FILENAME", 0, "Runtime file to load", 0},
-      {0}};
-  struct argp argp = {options, parse, 0, 0, 0, 0, 0};
+  struct argp argp = {options, parse, 0, doc, 0, 0, 0};
   return argp_parse(&argp, argc, argv, 0, 0, 0);
 }
