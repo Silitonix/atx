@@ -1,5 +1,6 @@
 #include "engine.h"
 #include <argp.h>
+#include <bits/types/cookie_io_functions_t.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -167,7 +168,8 @@ void task_remove(Task *task) {
   }
   free(task);
 }
-void *work(void *_) {
+void *work(void *unused) {
+  (void)unused;
   Task task;
   while (running) {
     pthread_mutex_lock(&mutex);
@@ -187,7 +189,6 @@ void *work(void *_) {
   }
   return NULL;
 }
-
 Lib load(const char *filename) {
   print("loading runtime file ...");
   Lib cache;
@@ -197,7 +198,12 @@ Lib load(const char *filename) {
   try(error != NULL, error);
 
   print("loading runtime function ...");
-  cache.function = (task_handler)dlsym(cache.handle, "handle");
+  union {
+    void *ptr;
+    task_handler handler;
+  } converter;
+  converter.ptr = dlsym(cache.handle, "handle");
+  cache.function = converter.handler;
   error = dlerror();
 
   try(error != NULL, error);
@@ -217,7 +223,8 @@ void try(int err, const char *msg) {
     exit(EXIT_FAILURE);
   }
 }
-int parse(int key, char *arg, struct argp_state *_) {
+int parse(int key, char *arg, struct argp_state *unused) {
+  (void)unused;
   static int port = 0, thread = 0;
   static const char *runtime_path = "./runtime.btx";
   switch (key) {
@@ -240,7 +247,8 @@ int parse(int key, char *arg, struct argp_state *_) {
   }
   return 0;
 }
-void signal_hanler(int _) {
+void signal_hanler(int unused) {
+  (void)unused;
   uint64_t val = 1;
   write(event_shutdown, &val, sizeof(val));
   printf("\r[\033[34mNotice\033[0m]: stoping server please wait ...\n");
