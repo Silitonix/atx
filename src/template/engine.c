@@ -133,8 +133,11 @@ void event_add(int fd) {
   epoll_ctl(event_poll, EPOLL_CTL_ADD, fd, &event);
 }
 void task_clean(void) {
+  Task *t;
   while (queue) {
-    task_remove(queue);
+    t = queue;
+    queue = queue->next;
+    free(t);
   }
 }
 void task_add(int client_fd) {
