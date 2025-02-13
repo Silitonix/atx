@@ -21,11 +21,11 @@ typedef struct _task {
   struct _task *next;
 } Task;
 
-typedef void (*TaskHandler)(Task);
+typedef void (*task_handler)(Task);
 
 typedef struct _lib {
   void *handle;
-  TaskHandler function;
+  task_handler function;
 } Lib;
 
 void print(const char *msg);

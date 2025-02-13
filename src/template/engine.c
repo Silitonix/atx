@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-Task *queue = {0};
+Task *queue = NULL;
 Lib runtime = {0};
 int max_event = 64;
 int event_poll = 0;
@@ -53,7 +53,19 @@ void server(int port, int thread) {
       if (events[i].data.fd == event_shutdown) {
         print("shutdown event triggered");
         running = 0;
-        goto bye;
+        free(events);
+        task_clean();
+        close(server);
+        close(event_poll);
+
+        print("closing threads ...");
+
+        pthread_cond_broadcast(&cond);
+        for (int t = 0; t < thread; t++) {
+          pthread_join(thread_pool[t], NULL);
+        }
+        dlclose(runtime.handle);
+        exit(EXIT_SUCCESS);
       }
       if (events[i].data.fd == server) {
 
@@ -67,7 +79,6 @@ void server(int port, int thread) {
         pthread_mutex_unlock(&mutex);
       }
     }
-
     if (num_event == max_event) {
       max_event *= 2;
       print("expanding event pool ...");
@@ -77,18 +88,6 @@ void server(int port, int thread) {
       print("shrinking event pool to ...");
       events = realloc(events, max_event * sizeof(struct epoll_event));
     }
-  }
-bye:
-  free(events);
-  task_clean();
-  close(server);
-  close(event_poll);
-
-  print("closing threads ...");
-
-  pthread_cond_broadcast(&cond);
-  for (int t = 0; t < thread; t++) {
-    pthread_join(thread_pool[t], NULL);
   }
 }
 
@@ -123,17 +122,20 @@ int listen_socket(int port) {
 
   return fd_server;
 }
+void event_nonblock(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFD, flags | O_NONBLOCK);
+}
 
 void event_add(int fd) {
   struct epoll_event event;
   event.data.fd = fd;
   event.events = EPOLLIN | EPOLLET;
-  int flags = fcntl(fd, F_GETFL, 0);
-  fcntl(fd, F_SETFD, flags | O_NONBLOCK);
+  event_nonblock(fd);
   epoll_ctl(event_poll, EPOLL_CTL_ADD, fd, &event);
 }
 void task_clean(void) {
-  Task *t;
+  Task *t = NULL;
   while (queue) {
     t = queue;
     queue = queue->next;
@@ -143,6 +145,7 @@ void task_clean(void) {
 void task_add(int client_fd) {
   Task *task = (Task *)malloc(sizeof(Task));
   task->client_fd = client_fd;
+  task->next = NULL;
   if (queue == NULL) {
     queue = task;
     task->prev = task;
@@ -194,7 +197,7 @@ Lib load(const char *filename) {
   try(error != NULL, error);
 
   print("loading runtime function ...");
-  cache.function = (TaskHandler)dlsym(cache.handle, "handle");
+  cache.function = (task_handler)dlsym(cache.handle, "handle");
   error = dlerror();
 
   try(error != NULL, error);
@@ -233,7 +236,6 @@ int parse(int key, char *arg, struct argp_state *_) {
     thread = thread == 0 ? sysconf(_SC_NPROCESSORS_ONLN) : thread;
     runtime = load(runtime_path);
     server(port, thread);
-    dlclose(runtime.handle);
     break;
   }
   return 0;
